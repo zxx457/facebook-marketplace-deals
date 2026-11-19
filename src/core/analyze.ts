@@ -46,6 +46,9 @@ export interface ScoredListing {
   variant: string;
   specs: Specs;
   condition: string | null;
+  transmission: string | null;
+  odometerKm: number | null;
+  odometerText: string | null;
   distanceKm: number | null;
   score: number;
   benchmark: Benchmark | null;
@@ -275,6 +278,9 @@ export function compareListings(all: Listing[], opts: CompareOptions): CompareRe
       variant: specKey(s),
       specs: s,
       condition: d?.conditionLabel ?? d?.condition ?? null,
+      transmission: d?.vehicle?.transmission ?? l.transmission ?? null,
+      odometerKm: d?.vehicle?.odometerKm ?? l.odometerKm ?? null,
+      odometerText: d?.vehicle?.odometerText ?? l.odometerText ?? null,
       distanceKm,
       score: Math.max(0, Math.round(score)),
       benchmark: b,

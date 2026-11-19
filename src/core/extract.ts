@@ -7,6 +7,7 @@
 // polluting the detail view (we select the focal object by id).
 
 import type { Listing, ListingDetail } from "./types.js";
+import { conditionFromRaw, parseVehicle, summarizeVehicle, vehicleAttributes } from "./vehicle.js";
 
 type Json = unknown;
 type Obj = Record<string, any>;
@@ -17,6 +18,8 @@ const SYMBOL_CURRENCY: Array<[RegExp, string]> = [
   [/₪|\bILS\b|ש"ח|ש״ח/, "ILS"],
   [/€|\bEUR\b/, "EUR"],
   [/£|\bGBP\b/, "GBP"],
+  // Before the bare "$" rule, or "A$6,500" is read as USD.
+  [/A\$|AU\$|\bAUD\b/, "AUD"],
   [/\bUSD\b|US\$|\$/, "USD"],
 ];
 
@@ -82,15 +85,24 @@ function priceFrom(p: Obj | null | undefined): { amount: number | null; text: st
 }
 
 function isListingObject(o: Obj): boolean {
-  return typeof o.marketplace_listing_title === "string" && typeof o.id === "string";
+  return typeof o.marketplace_listing_title === "string" && (typeof o.id === "string" || typeof o.id === "number");
+}
+
+/** A Relay fragment of this listing, including a vehicle-only sibling that has no title. */
+function isFocalFragment(o: Obj): boolean {
+  if ("marketplace_listing_title" in o || "listing_photos" in o || "redacted_description" in o || "attribute_data" in o) return true;
+  if ("__isMarketplaceVehicleListing" in o || "custom_sub_titles_with_rendering_flags" in o || "dealership_name" in o) return true;
+  if (typeof o.__typename === "string" && /MarketplaceVehicle/i.test(o.__typename)) return true;
+  return Object.keys(o).some((k) => k.startsWith("vehicle_"));
 }
 
 export function toListing(o: Obj): Listing {
   const price = priceFrom(o.listing_price);
   const prev = priceFrom(o.strikethrough_price);
   const geo = o.location?.reverse_geocode;
+  const summary = summarizeVehicle(o);
   return {
-    id: o.id,
+    id: String(o.id),
     url: `https://www.facebook.com/marketplace/item/${o.id}/`,
     title: String(o.marketplace_listing_title).replace(/^‏/, "").trim(),
     price: price.amount,
@@ -106,6 +118,9 @@ export function toListing(o: Obj): Listing {
     sellerId: o.marketplace_listing_seller?.id ?? null,
     deliveryTypes: Array.isArray(o.delivery_types) ? o.delivery_types.map(String) : [],
     categoryId: o.marketplace_listing_category_id ?? null,
+    transmission: summary.transmission,
+    odometerKm: summary.odometerKm,
+    odometerText: summary.odometerText,
   };
 }
 
@@ -114,7 +129,9 @@ export function extractListings(docs: Json[]): Listing[] {
   const seen = new Map<string, Listing>();
   for (const doc of docs) {
     walk(doc, (o) => {
-      if (isListingObject(o) && !seen.has(o.id)) seen.set(o.id, toListing(o));
+      if (!isListingObject(o)) return;
+      const id = String(o.id);
+      if (!seen.has(id)) seen.set(id, toListing(o));
     });
   }
   return [...seen.values()];
@@ -125,8 +142,10 @@ function mergeFocal(docs: Json[], id: string): Obj {
   const merged: Obj = {};
   for (const doc of docs) {
     walk(doc, (o) => {
-      if (o.id !== id) return;
-      if (!("marketplace_listing_title" in o) && !("listing_photos" in o) && !("redacted_description" in o)) return;
+      if (o.id === undefined || o.id === null || String(o.id) !== id) return;
+      // Vehicle facts often arrive on a second fragment that shares the listing
+      // id but has none of the title / photo / description keys.
+      if (!isFocalFragment(o)) return;
       for (const [k, v] of Object.entries(o)) {
         if (v !== null && v !== undefined && merged[k] === undefined) merged[k] = v;
       }
@@ -138,7 +157,14 @@ function mergeFocal(docs: Json[], id: string): Obj {
 export function extractDetail(docs: Json[], id: string): ListingDetail | null {
   const o = mergeFocal(docs, id);
   if (!o.marketplace_listing_title) return null;
+  const description = String(o.redacted_description?.text ?? "");
+  const vehicle = parseVehicle(o, description);
   const base = toListing({ ...o, id });
+  if (vehicle?.transmission) base.transmission = vehicle.transmission;
+  if (vehicle?.odometerKm != null) {
+    base.odometerKm = vehicle.odometerKm;
+    base.odometerText = vehicle.odometerText;
+  }
   const attrs: ListingDetail["attributes"] = Array.isArray(o.attribute_data)
     ? o.attribute_data.map((a: Obj) => ({
         name: String(a.attribute_name ?? "").replace(/[‎‏]/g, ""),
@@ -146,7 +172,21 @@ export function extractDetail(docs: Json[], id: string): ListingDetail | null {
         label: String(a.label ?? ""),
       }))
     : [];
-  const cond = attrs.find((a) => /^(new|used|refurbished)/i.test(a.value));
+  if (vehicle) {
+    const seen = new Set(attrs.map((a) => `${a.name}\0${a.label}`));
+    for (const a of vehicleAttributes(vehicle)) {
+      const key = `${a.name}\0${a.label}`;
+      if (seen.has(key)) continue;
+      if (a.name !== "about" && attrs.some((x) => x.name === a.name)) continue;
+      attrs.push(a);
+      seen.add(key);
+    }
+  }
+  const fromAttrs = attrs.find((a) => a.name !== "about" && /^(new|used|refurbished)/i.test(a.value));
+  const cond =
+    fromAttrs ??
+    conditionFromRaw(o.vehicle_condition) ??
+    conditionFromRaw(o.condition);
   const coords = o.location?.latitude !== undefined ? o.location : o.item_location;
   const photos: string[] = Array.isArray(o.listing_photos)
     ? o.listing_photos.map((p: Obj) => p?.image?.uri).filter(Boolean)
@@ -154,7 +194,7 @@ export function extractDetail(docs: Json[], id: string): ListingDetail | null {
   return {
     ...base,
     city: base.city ?? null,
-    description: String(o.redacted_description?.text ?? ""),
+    description,
     condition: cond?.value ?? null,
     conditionLabel: cond?.label ?? null,
     attributes: attrs,
@@ -164,5 +204,6 @@ export function extractDetail(docs: Json[], id: string): ListingDetail | null {
     photos,
     shippingOffered: Boolean(o.is_shipping_offered),
     status: o.renderable_listing_status ?? null,
+    vehicle,
   };
 }

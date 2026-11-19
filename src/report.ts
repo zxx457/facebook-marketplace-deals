@@ -7,7 +7,7 @@ import type { CompareRun } from "./service.js";
 
 const CSV_COLUMNS = [
   "bucket", "rank", "score", "title", "price", "wasPrice", "variant", "city", "ageDays", "condition",
-  "distanceKm", "verdict", "vsMedianPct", "opening", "fair", "benchmarkMedian", "flags", "url",
+  "distanceKm", "verdict", "vsMedianPct", "opening", "fair", "benchmarkMedian", "flags", "url", "transmission", "odometer",
 ] as const;
 
 function csvCell(v: unknown): string {
@@ -21,7 +21,7 @@ function row(bucket: string, x: ScoredListing, rank: number | ""): string {
   return [
     bucket, rank, x.score, x.title, x.price, x.previousPrice, x.variant, x.city, x.ageDays, x.condition,
     x.distanceKm, x.offer?.verdict, x.offer?.vsMedianPct, x.offer?.opening, x.offer?.fair,
-    x.benchmark?.stats.median, x.flags.map((f) => f.code).join(" "), x.url,
+    x.benchmark?.stats.median, x.flags.map((f) => f.code).join(" "), x.url, x.transmission, x.odometerText,
   ].map(csvCell).join(",");
 }
 
@@ -45,7 +45,7 @@ function card(x: ScoredListing, rank?: number): string {
   <header><span class="score">${x.score}</span>${rank ? `<span class="rank">#${rank}</span>` : ""}
   <a dir="auto" href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a></header>
   <p class="price">${esc(x.priceText || x.price)}${x.previousPrice ? ` <s>${x.previousPrice}</s>` : ""}</p>
-  <p class="meta" dir="auto">${esc(x.variant)} · ${esc(x.city ?? "?")} · ${x.ageDays ?? "?"}d${x.condition ? ` · ${esc(x.condition)}` : ""}${x.distanceKm !== null ? ` · ${x.distanceKm} km` : ""}</p>
+  <p class="meta" dir="auto">${esc(x.variant)} · ${esc(x.city ?? "?")} · ${x.ageDays ?? "?"}d${x.condition ? ` · ${esc(x.condition)}` : ""}${x.transmission ? ` · ${esc(x.transmission)}` : ""}${x.odometerText ? ` · ${esc(x.odometerText)}` : ""}${x.distanceKm !== null ? ` · ${x.distanceKm} km away` : ""}</p>
   ${offer}${flags ? `<ul class="flags">${flags}</ul>` : ""}
 </article>`;
 }

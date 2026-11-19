@@ -5,7 +5,7 @@ import { extractSpecs, isRelevant, normalizeText, specKey } from "../src/core/sp
 import { compareListings, roundNice, suggestOffer } from "../src/core/analyze.js";
 import { haversineKm, madOutliers, priceStats } from "../src/core/stats.js";
 import { redFlags } from "../src/core/flags.js";
-import type { Listing, ListingDetail } from "../src/core/types.js";
+import type { Listing, ListingDetail, VehicleDetails } from "../src/core/types.js";
 
 const searchHtml = readFileSync(new URL("./fixtures/search-iphone13.html", import.meta.url), "utf8");
 const itemHtml = readFileSync(new URL("./fixtures/item-detail.html", import.meta.url), "utf8");
@@ -27,6 +27,9 @@ const mk = (over: Partial<Listing>): Listing => ({
   sellerId: null,
   deliveryTypes: ["IN_PERSON"],
   categoryId: null,
+  transmission: null,
+  odometerKm: null,
+  odometerText: null,
   ...over,
 });
 
@@ -52,6 +55,9 @@ describe("extract", () => {
     expect(d.currency).toBe("ILS");
     expect(d.description).toContain("בריאות הסוללה: 85%");
     expect(d.condition).toBe("used_like_new");
+    expect(d.vehicle).toBeNull();
+    expect(d.transmission).toBeNull();
+    expect(d.attributes).toHaveLength(2);
     expect(d.latitude).toBeCloseTo(32.47, 1);
     expect(d.photos.length).toBe(5);
     expect(d.status).toBe("AVAILABLE");
@@ -70,9 +76,192 @@ describe("extract", () => {
 
   it("infers currency from symbols", () => {
     expect(currencyFromText("$427")).toBe("USD");
+    expect(currencyFromText("A$6,500")).toBe("AUD");
+    expect(currencyFromText("AU$100")).toBe("AUD");
     expect(currencyFromText("1,000 ₪")).toBe("ILS");
     expect(currencyFromText("€5")).toBe("EUR");
     expect(currencyFromText("1000")).toBeNull();
+  });
+
+  it("reads vehicle_* fields, including a fragment that has no title", () => {
+    const id = "9000000000000101";
+    const html = `<script type="application/json">${JSON.stringify({
+      data: {
+        focal: {
+          id,
+          marketplace_listing_title: "2005 BMW 320Ci E46",
+          listing_price: { amount: "6500.00", formatted_amount: "A$6,500", currency: "AUD" },
+          attribute_data: [],
+          redacted_description: { text: "Well looked after coupe. Service history available." },
+          vehicle_make_display_name: "BMW",
+          vehicle_model_display_name: "3 Series",
+          vehicle_trim_display_name: "320Ci",
+          vehicle_condition: "GOOD",
+          vehicle_fuel_type: "GASOLINE",
+          vehicle_exterior_color: "Black",
+          vehicle_seller_type: "PRIVATE_SELLER",
+          vehicle_title_status: "CLEAN",
+          vehicle_is_paid_off: true,
+          vehicle_number_of_owners: "TWO",
+          vehicle_year: 2005,
+          vehicle_specifications: { engine_size: "2.5L" },
+          __isMarketplaceVehicleListing: "MarketplaceVehicleListing",
+        },
+      },
+    })}</script>`;
+    const gql =
+      'for (;;);{"data":{"node":{"id":"' +
+      id +
+      '","vehicle_transmission_type":"MANUAL","vehicle_odometer_data":{"unit":"KILOMETERS","value":208000},"vehicle_interior_color":"Beige","vehicle_features":["Sunroof","Leather seats"]}}}\n{"extensions":{}}';
+    const d = extractDetail([...parseJsonBlocks(html), ...parseGraphqlPayload(gql)], id)!;
+    expect(d.price).toBe(6500);
+    expect(d.currency).toBe("AUD");
+    expect(d.condition).toBe("used_good");
+    expect(d.vehicle).toMatchObject({
+      year: 2005,
+      make: "BMW",
+      model: "3 Series",
+      trim: "320Ci",
+      transmission: "manual",
+      odometerKm: 208000,
+      odometerText: "208,000 km",
+      odometerPlaceholder: false,
+      fuel: "petrol",
+      exteriorColor: "Black",
+      interiorColor: "Beige",
+      owners: "2",
+      titleStatus: "clean",
+      paidOff: true,
+      sellerType: "private",
+      condition: "used_good",
+      features: ["Sunroof", "Leather seats"],
+    });
+    expect(d.transmission).toBe("manual");
+    expect(d.odometerKm).toBe(208000);
+    expect(d.attributes.map((a) => a.label)).toEqual(
+      expect.arrayContaining(["Manual transmission", "Driven 208,000 km", "Petrol", "Private seller", "Clean title", "Paid off", "Engine Size: 2.5L"]),
+    );
+    expect(d.vehicle?.rawLines).toContain("Engine Size: 2.5L");
+    expect(d.description).not.toMatch(/manual|208/);
+  });
+
+  it("converts miles and flags placeholder odometers", () => {
+    const miles = extractDetail(
+      [
+        {
+          data: {
+            focal: {
+              id: "42",
+              marketplace_listing_title: "2003 BMW 325i",
+              listing_price: { amount: "4000", formatted_amount: "A$4,000", currency: "AUD" },
+              attribute_data: [],
+              vehicle_odometer_data: { value: 80000, unit: "MILES" },
+              vehicle_transmission_type: "AUTOMATIC",
+            },
+          },
+        },
+      ],
+      "42",
+    )!;
+    expect(miles.vehicle).toMatchObject({ transmission: "automatic", odometerKm: 128748, odometerText: "128,748 km (80,000 mi)" });
+
+    const placeholder = extractDetail(
+      [
+        {
+          data: {
+            focal: {
+              id: "43",
+              marketplace_listing_title: "BMW 320i",
+              listing_price: { amount: "1234", formatted_amount: "A$1,234", currency: "AUD" },
+              attribute_data: [],
+              vehicle_odometer_data: { value: 123, unit: "KILOMETERS" },
+              vehicle_seller_type: "DEALER",
+              dealership_name: "Coastal Motors",
+            },
+          },
+        },
+      ],
+      "43",
+    )!;
+    expect(placeholder.vehicle).toMatchObject({ odometerKm: 123, odometerPlaceholder: true, sellerType: "dealer", dealershipName: "Coastal Motors" });
+    expect(placeholder.attributes.some((a) => a.label.includes("placeholder"))).toBe(true);
+    expect(placeholder.attributes.some((a) => a.label === "Dealer")).toBe(true);
+  });
+
+  it("falls back to about-section lines when vehicle_* fields are missing", () => {
+    const d = extractDetail(
+      [
+        {
+          data: {
+            focal: {
+              id: "44",
+              marketplace_listing_title: "2003 BMW 325i E46",
+              listing_price: { amount: "5500", formatted_amount: "A$5,500", currency: "AUD" },
+              attribute_data: [],
+              redacted_description: {
+                text: "About this vehicle\nManual transmission\nDriven 208,000 km\nPetrol\nExterior colour: Silver\nInterior colour: Black\n2 owners\nClean title\nPaid off",
+              },
+            },
+          },
+        },
+      ],
+      "44",
+    )!;
+    expect(d.vehicle).toMatchObject({
+      year: 2003,
+      transmission: "manual",
+      odometerKm: 208000,
+      fuel: "petrol",
+      exteriorColor: "Silver",
+      interiorColor: "Black",
+      owners: "2",
+      titleStatus: "clean",
+      paidOff: true,
+    });
+    expect(d.vehicle?.rawLines).toEqual(
+      expect.arrayContaining(["Manual transmission", "Driven 208,000 km", "Petrol", "Clean title", "Paid off"]),
+    );
+    expect(d.attributes.map((a) => a.name)).toEqual(expect.arrayContaining(["transmission", "odometer", "about"]));
+  });
+
+  it("does not treat a user manual as a vehicle", () => {
+    const d = extractDetail(
+      [
+        {
+          data: {
+            focal: {
+              id: "45",
+              marketplace_listing_title: "iPhone 13",
+              listing_price: { amount: "1000", formatted_amount: "A$1,000", currency: "AUD" },
+              attribute_data: [],
+              redacted_description: { text: "Includes the original box and user manual." },
+            },
+          },
+        },
+      ],
+      "45",
+    )!;
+    expect(d.vehicle).toBeNull();
+    expect(d.currency).toBe("AUD");
+    expect(d.attributes).toEqual([]);
+  });
+
+  it("reads transmission and kilometres from a search-card subtitle", () => {
+    const [car] = extractListings([
+      {
+        data: {
+          listings: [
+            {
+              id: "7",
+              marketplace_listing_title: "2005 BMW 320Ci",
+              listing_price: { amount: "6500.00", formatted_amount: "A$6,500" },
+              custom_sub_titles_with_rendering_flags: [{ subtitle: "Manual · 208K km" }],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(car).toMatchObject({ currency: "AUD", price: 6500, transmission: "manual", odometerKm: 208000, odometerText: "208,000 km" });
   });
 });
 
@@ -272,6 +461,57 @@ describe("compare", () => {
     ];
     const r = compareListings(ls, { queries: ["iphone 13"] });
     expect(r.deals[0].id).toBe("pro0");
+  });
+
+  it("carries search-card gearbox and odometer, and prefers the detail vehicle", () => {
+    const card = mk({
+      id: "car",
+      title: "BMW 320Ci",
+      transmission: "automatic",
+      odometerKm: 1000,
+      odometerText: "1,000 km",
+    });
+    const fromCard = compareListings([card], { queries: ["bmw"] });
+    expect(fromCard.deals[0]).toMatchObject({ transmission: "automatic", odometerText: "1,000 km", odometerKm: 1000 });
+    const vehicle = {
+      year: 2005,
+      make: "BMW",
+      model: null,
+      trim: null,
+      bodyStyle: null,
+      transmission: "manual",
+      odometerKm: 208000,
+      odometerText: "208,000 km",
+      odometerPlaceholder: false,
+      fuel: "petrol",
+      exteriorColor: null,
+      interiorColor: null,
+      owners: null,
+      titleStatus: null,
+      paidOff: null,
+      sellerType: "private",
+      dealershipName: null,
+      vin: null,
+      condition: null,
+      features: [],
+      rawLines: [],
+    } satisfies VehicleDetails;
+    const detail = {
+      ...card,
+      description: "",
+      condition: null,
+      conditionLabel: null,
+      attributes: [],
+      latitude: null,
+      longitude: null,
+      locationText: null,
+      photos: [],
+      shippingOffered: false,
+      status: "AVAILABLE",
+      vehicle,
+    } satisfies ListingDetail;
+    const enriched = compareListings([card], { queries: ["bmw"], details: new Map([["car", detail]]) });
+    expect(enriched.deals[0]).toMatchObject({ transmission: "manual", odometerKm: 208000, odometerText: "208,000 km" });
   });
 
   it("moves high-severity listings to suspicious", () => {

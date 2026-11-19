@@ -23,6 +23,9 @@ const mk = (id: string, price: number, title = "iPhone 13"): Listing => ({
   sellerId: null,
   deliveryTypes: [],
   categoryId: null,
+  transmission: null,
+  odometerKm: null,
+  odometerText: null,
 });
 
 describe("urls", () => {
