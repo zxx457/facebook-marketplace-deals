@@ -44,6 +44,8 @@ export function createServer(): { server: McpServer; shutdown: () => Promise<voi
         "Facebook Marketplace, read-only.",
         "For any best price / cheapest / good deal / is-this-fair / should-I-buy request, load the `marketplace-deals` skill if available and call marketplace_compare",
         "(several Hebrew + English query variants): it sweeps sorts, groups like-for-like variants, ranks deals and flags scams.",
+        "For Perth, WA, prefer the `perth-marketplace-deals` skill when it is installed.",
+        "On a vehicle, read `vehicle.transmission` and `vehicle.odometerKm` before saying the listing omitted gearbox or kilometres.",
         "marketplace_search is only for a quick raw look at one query.",
         "Never type Facebook credentials: marketplace_login opens a window where the user logs in.",
       ].join(" "),
@@ -136,6 +138,8 @@ export function createServer(): { server: McpServer; shutdown: () => Promise<voi
             ...(l.previousPrice ? { wasPrice: l.previousPrice } : {}),
             city: l.city,
             listedDaysAgo: l.createdAt ? Math.round((Date.now() / 1000 - l.createdAt) / 8640) / 10 : null,
+            ...(l.transmission ? { transmission: l.transmission } : {}),
+            ...(l.odometerText ? { odometer: l.odometerText, odometerKm: l.odometerKm } : {}),
             ...(l.isSold || l.isPending ? { status: l.isSold ? "sold" : "pending" } : {}),
             ...(l.sellerName ? { seller: l.sellerName } : {}),
             url: l.url,
@@ -151,7 +155,7 @@ export function createServer(): { server: McpServer; shutdown: () => Promise<voi
     "marketplace_listing",
     {
       description:
-        "Full detail for one listing: description, condition, exact pickup area, delivery options, all photos. Set include_photos to SEE the real photos (check the item matches the title, spot stock photos, damage, serial numbers).",
+        "Full detail for one listing: description, condition, exact pickup area, delivery options, all photos. Vehicle listings include a `vehicle` object (transmission, odometerKm, fuel, colours, owners, title status, seller type) and the same facts in `attributes`; `vehicle.rawLines` is the fallback when structured fields are missing. Read those before concluding a car listing omitted gearbox or kilometres. Set include_photos to SEE the real photos (check the item matches the title, spot stock photos, damage, serial numbers).",
       inputSchema: {
         listing: z.string().min(6).describe("Listing id or Marketplace item URL."),
         include_photos: z.number().int().min(0).max(6).default(0).describe("How many photos to return as images."),

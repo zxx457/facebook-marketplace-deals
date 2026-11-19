@@ -148,6 +148,8 @@ export function compactListing(x: ScoredListing, rank?: number): Record<string, 
     city: x.city,
     ageDays: x.ageDays,
     ...(x.condition ? { condition: x.condition } : {}),
+    ...(x.transmission ? { transmission: x.transmission } : {}),
+    ...(x.odometerText ? { odometer: x.odometerText, odometerKm: x.odometerKm } : {}),
     ...(x.distanceKm !== null ? { distanceKm: x.distanceKm } : {}),
     ...(x.offer
       ? {

@@ -69,7 +69,9 @@ async function main(): Promise<number> {
           for (const g of r.groups) out(`  ${g.variant.padEnd(22)} n=${g.count}  median=${g.stats?.median ?? "-"}`);
           out("Best deals:");
           r.deals.forEach((d, i) =>
-            out(`  ${i + 1}. [${d.score}] ${d.priceText} ${d.title} (${d.city ?? "?"}) ${d.offer ? `· ${d.offer.verdict}, open at ${d.offer.opening}` : ""}\n     ${d.url}`),
+            out(
+              `  ${i + 1}. [${d.score}] ${d.priceText} ${d.title} (${d.city ?? "?"})${d.transmission ? ` · ${d.transmission}` : ""}${d.odometerText ? ` · ${d.odometerText}` : ""} ${d.offer ? `· ${d.offer.verdict}, open at ${d.offer.opening}` : ""}\n     ${d.url}`,
+            ),
           );
           if (r.suspicious.length) out(`Suspicious: ${r.suspicious.length} (see report)`);
         }

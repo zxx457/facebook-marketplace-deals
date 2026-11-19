@@ -202,11 +202,31 @@ export class MarketplaceSession {
     return this.exclusive(async () => {
       const hit = this.detailCache.get(id);
       if (hit && Date.now() - hit.at < config.cacheTtlMs) return hit.value;
-      const { html } = await this.goto(itemUrl(id));
-      const d = extractDetail(parseJsonBlocks(html), id);
-      if (!d) throw new Error(`Listing ${id} not found: it may be removed, sold, or restricted to logged-in users.`);
-      this.detailCache.set(id, { at: Date.now(), value: d });
-      return d;
+      // Vehicle facts are sometimes a follow-up GraphQL fragment rather than
+      // part of the first HTML island. Same capture search() already does.
+      const graphqlDocs: unknown[] = [];
+      const onResponse = async (r: Response) => {
+        if (!r.url().includes("/api/graphql")) return;
+        try {
+          const text = await r.text();
+          if (text.includes("marketplace_listing_title") || text.includes("vehicle_") || text.includes(id)) {
+            graphqlDocs.push(...parseGraphqlPayload(text));
+          }
+        } catch {
+          // Body unavailable (navigation raced it): harmless.
+        }
+      };
+      const page = await this.tab();
+      page.on("response", onResponse);
+      try {
+        const { html } = await this.goto(itemUrl(id));
+        const d = extractDetail([...parseJsonBlocks(html), ...graphqlDocs], id);
+        if (!d) throw new Error(`Listing ${id} not found: it may be removed, sold, or restricted to logged-in users.`);
+        this.detailCache.set(id, { at: Date.now(), value: d });
+        return d;
+      } finally {
+        page.off("response", onResponse);
+      }
     });
   }
 

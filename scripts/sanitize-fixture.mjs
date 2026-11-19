@@ -63,8 +63,67 @@ function sanitizeListing(o) {
     marketplace_listing_seller: null,
     delivery_types: o.delivery_types ?? [],
     marketplace_listing_category_id: o.marketplace_listing_category_id ?? null,
+    ...sanitizeVehicle(o),
   };
   return out;
+}
+
+// Keep the vehicle facts the parser reads. Drop VINs, URLs and long blobs.
+function sanitizeVehicle(o) {
+  const keys = [
+    "vehicle_odometer_data",
+    "vehicle_transmission_type",
+    "vehicle_fuel_type",
+    "vehicle_exterior_color",
+    "vehicle_interior_color",
+    "vehicle_make_display_name",
+    "vehicle_model_display_name",
+    "vehicle_trim_display_name",
+    "vehicle_year",
+    "vehicle_seller_type",
+    "vehicle_title_status",
+    "vehicle_is_paid_off",
+    "vehicle_number_of_owners",
+    "vehicle_condition",
+    "vehicle_body_style",
+    "vehicle_features",
+    "vehicle_specifications",
+    "__isMarketplaceVehicleListing",
+    "condition",
+    "dealership_name",
+    "custom_sub_titles_with_rendering_flags",
+  ];
+  const out = {};
+  for (const k of keys) {
+    const v = cleanVehicleValue(o[k]);
+    if (v !== null && v !== undefined) out[k] = v;
+  }
+  if (Array.isArray(out.custom_sub_titles_with_rendering_flags)) {
+    out.custom_sub_titles_with_rendering_flags = out.custom_sub_titles_with_rendering_flags
+      .map((x) => ({ subtitle: typeof x === "string" ? x : x?.subtitle ?? null }))
+      .filter((x) => x.subtitle);
+  }
+  return out;
+}
+
+function cleanVehicleValue(v) {
+  if (v == null) return null;
+  if (typeof v === "string") return /^https?:/i.test(v) || v.length > 200 ? null : v;
+  if (typeof v === "number" || typeof v === "boolean") return v;
+  if (Array.isArray(v)) {
+    const items = v.map(cleanVehicleValue).filter((x) => x != null);
+    return items.length ? items : null;
+  }
+  if (typeof v === "object") {
+    const o = {};
+    for (const [k, val] of Object.entries(v)) {
+      if (k === "uri" || k === "url" || /token|cookie|vin/i.test(k)) continue;
+      const c = cleanVehicleValue(val);
+      if (c != null) o[k] = c;
+    }
+    return Object.keys(o).length ? o : null;
+  }
+  return null;
 }
 
 function sanitizeFocal(merged) {
@@ -78,6 +137,7 @@ function sanitizeFocal(merged) {
     listing_photos: (merged.listing_photos ?? []).map(() => ({ image: { uri: placeholder() } })),
     is_shipping_offered: Boolean(merged.is_shipping_offered),
     renderable_listing_status: merged.renderable_listing_status ?? null,
+    ...sanitizeVehicle(merged),
   };
 }
 
